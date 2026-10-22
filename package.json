@@ -1,0 +1,11 @@
+{
+  "name": "freelance-mvp",
+  "private": true,
+  "scripts": {
+    "build": "npm ci --prefix backend --omit=dev && npm ci --prefix frontend && npm run build --prefix frontend",
+    "start": "node backend/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
