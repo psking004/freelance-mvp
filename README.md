@@ -120,5 +120,45 @@ freelance-mvp/
 ## Notes
 
 - Data is stored **in-memory** — it resets when you restart the backend
-- The frontend proxies API calls to `localhost:5000` via the `proxy` field in `package.json`
+- In development the frontend proxies `/api` calls to `localhost:5000` via the `proxy` field in `package.json`
 - JWT tokens are stored in `localStorage` and expire after 7 days
+
+---
+
+## Run locally / Production
+
+### Run locally (development)
+
+```bash
+# Terminal 1 — API on http://localhost:5000
+cd backend
+npm install
+npm run dev          # or: npm start
+
+# Terminal 2 — React dev server on http://localhost:3000 (proxies /api to :5000)
+cd frontend
+npm install
+npm start
+```
+
+No env vars are needed for local dev. See `backend/.env.example` and `frontend/.env.example` for what can be set.
+
+### Production (single service, e.g. Render / Railway)
+
+The backend serves the built React app, so one Node service is enough:
+
+- **Build command:** `npm run build` (from the repo root)
+- **Start command:** `npm start`
+- **Env vars:** `NODE_ENV=production`, `JWT_SECRET` (required, long random string), `CORS_ORIGINS` (optional), `PORT` (set by most hosts)
+
+Health check: `GET /health`. The API is available under `/api/*` (old un-prefixed paths still work).
+
+### Production (separate frontend + backend)
+
+- Deploy `backend/` as a Node service (`npm ci && npm start`) with `JWT_SECRET`, `CORS_ORIGINS=https://<your-frontend-domain>`, `NODE_ENV=production`.
+- Deploy `frontend/` as a static site (`npm ci && npm run build`, publish `build/`) with `REACT_APP_API_URL=https://<your-backend-domain>`, and add an SPA rewrite of all paths to `/index.html`.
+
+> ⚠️ Data is stored in memory and is lost on every restart/redeploy. Add a database before real use.
+
+> 🧹 `node_modules/` folders are committed in this repo (~38k files). They are now ignored; untrack them once with:
+> `git rm -r --cached backend/node_modules frontend/node_modules && git commit -m "Stop tracking node_modules" && git push`
