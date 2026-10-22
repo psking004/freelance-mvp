@@ -2,12 +2,28 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 app.use(express.json());
-app.use(cors());
 
-const JWT_SECRET = 'mvp-secret-change-in-prod';
+// CORS: comma-separated list in CORS_ORIGINS (default: allow all, fine for local dev)
+const corsOrigins = (process.env.CORS_ORIGINS || '*').split(',').map((o) => o.trim()).filter(Boolean);
+app.use(cors({ origin: corsOrigins.includes('*') ? true : corsOrigins }));
+
+const PORT = process.env.PORT || 5000;
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-insecure-secret';
+if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('JWT_SECRET must be set in production');
+    process.exit(1);
+  }
+  console.warn('⚠️  JWT_SECRET not set — using an insecure dev default');
+}
+
+// API routes live on a router mounted at /api (used by the frontend) and at / (legacy paths)
+const api = express.Router();
 
 // ── In-Memory DB ──────────────────────────────────────────────
 let users = [];
@@ -73,7 +89,7 @@ const auth = (req, res, next) => {
 // ── Routes ────────────────────────────────────────────────────
 
 // POST /signup
-app.post('/signup', async (req, res) => {
+api.post('/signup', async (req, res) => {
   if (!validate(['name', 'email', 'password'], req.body))
     return res.status(400).json({ error: 'name, email, and password are required' });
 
@@ -107,7 +123,7 @@ app.post('/signup', async (req, res) => {
 });
 
 // POST /login
-app.post('/login', async (req, res) => {
+api.post('/login', async (req, res) => {
   if (!validate(['email', 'password'], req.body))
     return res.status(400).json({ error: 'email and password are required' });
 
@@ -125,12 +141,12 @@ app.post('/login', async (req, res) => {
 });
 
 // GET /skill-test/questions
-app.get('/skill-test/questions', auth, (_req, res) => {
+api.get('/skill-test/questions', auth, (_req, res) => {
   res.json(SKILL_QUESTIONS.map(({ q, opts }) => ({ q, opts })));
 });
 
 // POST /skill-test
-app.post('/skill-test', auth, (req, res) => {
+api.post('/skill-test', auth, (req, res) => {
   const { answers } = req.body;
   if (!Array.isArray(answers) || answers.length !== ANSWER_KEY.length)
     return res.status(400).json({ error: `Provide exactly ${ANSWER_KEY.length} answers` });
@@ -146,10 +162,10 @@ app.post('/skill-test', auth, (req, res) => {
 });
 
 // GET /task
-app.get('/task', auth, (_req, res) => res.json(SANDBOX_TASK));
+api.get('/task', auth, (_req, res) => res.json(SANDBOX_TASK));
 
 // POST /task-submit
-app.post('/task-submit', auth, (req, res) => {
+api.post('/task-submit', auth, (req, res) => {
   const { taskOutput } = req.body;
   if (!taskOutput || String(taskOutput).trim().length < 20)
     return res.status(400).json({ error: 'Submission too short — minimum 20 characters' });
@@ -168,12 +184,12 @@ app.post('/task-submit', auth, (req, res) => {
 });
 
 // GET /jobs
-app.get('/jobs', auth, (_req, res) => {
+api.get('/jobs', auth, (_req, res) => {
   res.json(JOBS.map((j) => ({ ...j, applicants: j.applicants.length })));
 });
 
 // POST /apply-job
-app.post('/apply-job', auth, (req, res) => {
+api.post('/apply-job', auth, (req, res) => {
   const { jobId } = req.body;
   if (!jobId) return res.status(400).json({ error: 'jobId is required' });
 
@@ -204,7 +220,7 @@ app.post('/apply-job', auth, (req, res) => {
 });
 
 // GET /profile
-app.get('/profile', auth, (req, res) => {
+api.get('/profile', auth, (req, res) => {
   const user = findUser(req.user.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -231,8 +247,24 @@ app.get('/profile', auth, (req, res) => {
   });
 });
 
-app.listen(5000, () => {
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.use('/api', api);
+
+// Production: serve the React build (frontend/build) from this server if present
+const BUILD_DIR = process.env.FRONTEND_BUILD_DIR || path.join(__dirname, '..', 'frontend', 'build');
+if (fs.existsSync(path.join(BUILD_DIR, 'index.html'))) {
+  app.use(express.static(BUILD_DIR));
+  // Browser navigations (Accept: text/html) to client routes get index.html
+  app.get('*', (req, res, next) => {
+    if ((req.headers.accept || '').includes('text/html')) return res.sendFile(path.join(BUILD_DIR, 'index.html'));
+    next();
+  });
+}
+
+app.use('/', api);
+
+app.listen(PORT, () => {
   console.log('');
-  console.log('✅  Backend running → http://localhost:5000');
+  console.log(`✅  Backend running → http://localhost:${PORT}`);
   console.log('');
 });
