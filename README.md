@@ -96,6 +96,7 @@ Minimum to apply for jobs = 30
 freelance-mvp/
 ├── backend/
 │   ├── server.js       ← Express server (all routes + logic)
+│   ├── db.js           ← SQLite persistence (better-sqlite3)
 │   └── package.json
 └── frontend/
     ├── public/
@@ -119,7 +120,7 @@ freelance-mvp/
 
 ## Notes
 
-- Data is stored **in-memory** — it resets when you restart the backend
+- Data is stored in **SQLite** (`backend/data/freelanceup.db`, created on first start; set `DB_PATH` to move it). Users, skill-test results, task submissions, trust scores and job applications survive restarts. Delete the file to reset.
 - In development the frontend proxies `/api` calls to `localhost:5000` via the `proxy` field in `package.json`
 - JWT tokens are stored in `localStorage` and expire after 7 days
 
@@ -158,7 +159,19 @@ Health check: `GET /health`. The API is available under `/api/*` (old un-prefixe
 - Deploy `backend/` as a Node service (`npm ci && npm start`) with `JWT_SECRET`, `CORS_ORIGINS=https://<your-frontend-domain>`, `NODE_ENV=production`.
 - Deploy `frontend/` as a static site (`npm ci && npm run build`, publish `build/`) with `REACT_APP_API_URL=https://<your-backend-domain>`, and add an SPA rewrite of all paths to `/index.html`.
 
-> ⚠️ Data is stored in memory and is lost on every restart/redeploy. Add a database before real use.
+> 💾 **Persistence in production:** the SQLite file must live on a persistent disk. On Render, attach a Disk (e.g. mounted at `/var/data`) and set `DB_PATH=/var/data/freelanceup.db`; without a disk, hosts with ephemeral filesystems wipe the database on each redeploy.
 
-> 🧹 `node_modules/` folders are committed in this repo (~38k files). They are now ignored; untrack them once with:
-> `git rm -r --cached backend/node_modules frontend/node_modules && git commit -m "Stop tracking node_modules" && git push`
+## Database schema
+
+| Table | What it stores |
+|-------|----------------|
+| `users` | name, email (unique), bcrypt password hash, skill score, tasks completed, trust score |
+| `quiz_results` | every skill-test attempt (answers, correct count, score) |
+| `task_submissions` | every sandbox-task submission |
+| `applications` | job applications (one per user per job) |
+
+Jobs, quiz questions and the sandbox task are static content defined in `server.js`.
+
+## Repository hygiene
+
+`node_modules/` and build output were committed by mistake early on (~38k files, 49 MB). They were purged from the whole git history on 2026-11-03 and are now in `.gitignore`. If you have an old clone, re-clone (or `git fetch && git reset --hard origin/main`) instead of pulling.

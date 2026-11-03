@@ -1,4 +1,4 @@
-# Dependencies (already-committed node_modules must be untracked once with: git rm -r --cached backend/node_modules frontend/node_modules)
+# Dependencies (purged from git history on 2026-11-03; never commit them)
 node_modules/
 
 # Env files (keep the examples)
@@ -13,3 +13,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .DS_Store
+
+# Local SQLite database (created at runtime)
+backend/data/
+*.db
+*.db-wal
+*.db-shm

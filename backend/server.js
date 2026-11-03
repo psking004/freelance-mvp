@@ -4,6 +4,8 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+const store = require('./db');
 
 const app = express();
 app.use(express.json());
@@ -25,17 +27,17 @@ if (!process.env.JWT_SECRET) {
 // API routes live on a router mounted at /api (used by the frontend) and at / (legacy paths)
 const api = express.Router();
 
-// ── In-Memory DB ──────────────────────────────────────────────
-let users = [];
-let applications = [];
+// ── Data ──────────────────────────────────────────────────────
+// Users, quiz results, task submissions and applications are persisted in SQLite (see db.js).
+// Jobs, quiz questions and the sandbox task are static content.
 
 const JOBS = [
-  { id: '1', title: 'Logo Design', description: 'Create a minimal logo for a tech startup. Must be clean, scalable, and provided in SVG format.', applicants: [] },
-  { id: '2', title: 'Blog Writing', description: 'Write a 500-word SEO article on remote work trends in 2024. Must include keywords and subheadings.', applicants: [] },
-  { id: '3', title: 'Data Entry', description: 'Enter 100 product records into a Google Sheet with name, price, category, and SKU columns.', applicants: [] },
-  { id: '4', title: 'Social Media Posts', description: 'Design 3 Instagram posts for a local bakery using Canva. Warm and friendly tone required.', applicants: [] },
-  { id: '5', title: 'Product Descriptions', description: 'Write descriptions for 10 e-commerce items (50 words each). Must be persuasive and SEO-friendly.', applicants: [] },
-  { id: '6', title: 'Email Newsletter', description: 'Write a monthly newsletter for a fitness brand. 300 words, include a CTA and tips section.', applicants: [] },
+  { id: '1', title: 'Logo Design', description: 'Create a minimal logo for a tech startup. Must be clean, scalable, and provided in SVG format.' },
+  { id: '2', title: 'Blog Writing', description: 'Write a 500-word SEO article on remote work trends in 2024. Must include keywords and subheadings.' },
+  { id: '3', title: 'Data Entry', description: 'Enter 100 product records into a Google Sheet with name, price, category, and SKU columns.' },
+  { id: '4', title: 'Social Media Posts', description: 'Design 3 Instagram posts for a local bakery using Canva. Warm and friendly tone required.' },
+  { id: '5', title: 'Product Descriptions', description: 'Write descriptions for 10 e-commerce items (50 words each). Must be persuasive and SEO-friendly.' },
+  { id: '6', title: 'Email Newsletter', description: 'Write a monthly newsletter for a fitness brand. 300 words, include a CTA and tips section.' },
 ];
 
 // Skill test answer key (0-indexed option)
@@ -71,7 +73,7 @@ const SANDBOX_TASK = {
 };
 
 // ── Helpers ───────────────────────────────────────────────────
-const findUser  = (id) => users.find((u) => u.id === id);
+const findUser  = (id) => store.findUserById(id);
 const calcTrust = (u)  => Math.min(u.skillScore, 50) + Math.min(u.tasksCompleted * 10, 30) + (u.isActive ? 20 : 0);
 const validate  = (keys, body) => keys.every((k) => body[k] !== undefined && String(body[k]).trim() !== '');
 
@@ -99,12 +101,12 @@ api.post('/signup', async (req, res) => {
     return res.status(400).json({ error: 'Invalid email address' });
   if (password.length < 6)
     return res.status(400).json({ error: 'Password must be at least 6 characters' });
-  if (users.find((u) => u.email === email.toLowerCase()))
+  if (store.findUserByEmail(email.toLowerCase()))
     return res.status(409).json({ error: 'Email already registered' });
 
   const passwordHash = await bcrypt.hash(password, 10);
   const user = {
-    id: Date.now().toString(),
+    id: crypto.randomUUID(),
     name: name.trim(),
     email: email.toLowerCase(),
     passwordHash,
@@ -113,7 +115,7 @@ api.post('/signup', async (req, res) => {
     isActive: true,
     trustScore: 20, // starts with active bonus
   };
-  users.push(user);
+  store.createUser(user);
 
   const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
   res.status(201).json({
@@ -128,7 +130,7 @@ api.post('/login', async (req, res) => {
     return res.status(400).json({ error: 'email and password are required' });
 
   const { email, password } = req.body;
-  const user = users.find((u) => u.email === email.toLowerCase());
+  const user = store.findUserByEmail(email.toLowerCase());
 
   if (!user || !(await bcrypt.compare(password, user.passwordHash)))
     return res.status(401).json({ error: 'Invalid email or password' });
@@ -155,8 +157,10 @@ api.post('/skill-test', auth, (req, res) => {
   const skillScore = Math.round((correct / ANSWER_KEY.length) * 50);
 
   const user = findUser(req.user.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
   user.skillScore = skillScore;
   user.trustScore = calcTrust(user);
+  store.recordQuiz(user, correct, ANSWER_KEY.length, answers);
 
   res.json({ correct, total: ANSWER_KEY.length, skillScore, trustScore: user.trustScore });
 });
@@ -175,6 +179,7 @@ api.post('/task-submit', auth, (req, res) => {
 
   user.tasksCompleted += 1;
   user.trustScore = calcTrust(user);
+  store.recordTask(user, String(taskOutput).trim());
 
   res.json({
     tasksCompleted: user.tasksCompleted,
@@ -185,15 +190,16 @@ api.post('/task-submit', auth, (req, res) => {
 
 // GET /jobs
 api.get('/jobs', auth, (_req, res) => {
-  res.json(JOBS.map((j) => ({ ...j, applicants: j.applicants.length })));
+  const counts = store.applicantCounts();
+  res.json(JOBS.map((j) => ({ ...j, applicants: counts[j.id] || 0 })));
 });
 
 // POST /apply-job
 api.post('/apply-job', auth, (req, res) => {
-  const { jobId } = req.body;
+  const jobId = req.body.jobId === undefined || req.body.jobId === null ? '' : String(req.body.jobId);
   if (!jobId) return res.status(400).json({ error: 'jobId is required' });
 
-  const job  = JOBS.find((j) => j.id === String(jobId));
+  const job  = JOBS.find((j) => j.id === jobId);
   if (!job)  return res.status(404).json({ error: 'Job not found' });
 
   const user = findUser(req.user.id);
@@ -204,17 +210,16 @@ api.post('/apply-job', auth, (req, res) => {
       error: `Trust score too low (${user.trustScore}). Need at least 30 to apply.`,
     });
 
-  if (applications.find((a) => a.jobId === jobId && a.userId === req.user.id))
+  if (store.hasApplied(jobId, req.user.id))
     return res.status(409).json({ error: 'You already applied to this job' });
 
   const application = {
-    id: Date.now().toString(),
+    id: crypto.randomUUID(),
     jobId,
     userId: req.user.id,
     status: 'pending',
   };
-  applications.push(application);
-  job.applicants.push(req.user.id);
+  store.createApplication(application);
 
   res.status(201).json({ message: 'Application submitted!', application });
 });
@@ -224,8 +229,8 @@ api.get('/profile', auth, (req, res) => {
   const user = findUser(req.user.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const myApps = applications
-    .filter((a) => a.userId === req.user.id)
+  const myApps = store
+    .applicationsByUser(req.user.id)
     .map((a) => ({
       ...a,
       jobTitle: JOBS.find((j) => j.id === a.jobId)?.title || 'Unknown',
@@ -247,7 +252,10 @@ api.get('/profile', auth, (req, res) => {
   });
 });
 
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/health', (_req, res) => {
+  store.db.prepare('SELECT 1').get();
+  res.json({ status: 'ok', db: 'sqlite' });
+});
 app.use('/api', api);
 
 // Production: serve the React build (frontend/build) from this server if present
@@ -266,5 +274,6 @@ app.use('/', api);
 app.listen(PORT, () => {
   console.log('');
   console.log(`✅  Backend running → http://localhost:${PORT}`);
+  console.log(`💾  SQLite database → ${store.DB_PATH}`);
   console.log('');
 });
